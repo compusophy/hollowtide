@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use js_sys::{ArrayBuffer, Uint8Array};
-use shared::{Class, ProjectileKind, *};
+use shared::{Biome, Class, ProjectileKind, *};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{
@@ -12,11 +12,12 @@ use web_sys::{
     WebGlProgram, WebGlShader, WebGlUniformLocation, WebGlVertexArrayObject, WebSocket,
 };
 
-const TILE_W: f32 = 48.0; // half-width of a diamond tile in screen pixels
-const TILE_H: f32 = 24.0; // half-height
-const ENTITY_PIXEL_SIZE: f32 = 56.0;
-const HP_BAR_W: f32 = 48.0;
-const HP_BAR_H: f32 = 5.0;
+const TILE_W: f32 = 24.0; // half-width of a diamond tile in screen pixels
+const TILE_H: f32 = 12.0; // half-height
+const ENTITY_PIXEL_SIZE: f32 = 42.0;
+const LANDMARK_PIXEL_SIZE: f32 = 78.0;
+const HP_BAR_W: f32 = 40.0;
+const HP_BAR_H: f32 = 4.0;
 
 // ===================== ENTRY =====================
 
@@ -483,7 +484,7 @@ impl App {
         match kind {
             EntityKind::Mob | EntityKind::Player => self.send(&ClientMsg::Attack { target: id }),
             EntityKind::Echo => self.send(&ClientMsg::Exorcise { target: id }),
-            EntityKind::Projectile => {}
+            EntityKind::Projectile | EntityKind::Landmark => {}
         }
     }
 
@@ -554,16 +555,37 @@ impl App {
         // Build vertex buffer
         self.verts.clear();
 
-        // Tile diamond outlines drawn as faint filled quads per tile, sparse grid
+        // Biome-tinted ground tiles across the visible area only (2-unit step).
         let half_tiles = self.state.world_tiles / 2;
-        for ty in (-half_tiles..half_tiles).step_by(2) {
-            for tx in (-half_tiles..half_tiles).step_by(2) {
+        let view_w_world = (w / dpr) / TILE_W * 1.2;
+        let view_h_world = (h / dpr) / TILE_H * 1.2;
+        let tx_min = ((self.state.cam.x - view_w_world) as i32).max(-half_tiles);
+        let tx_max = ((self.state.cam.x + view_w_world) as i32).min(half_tiles);
+        let ty_min = ((self.state.cam.y - view_h_world) as i32).max(-half_tiles);
+        let ty_max = ((self.state.cam.y + view_h_world) as i32).min(half_tiles);
+        let tstep: i32 = 2;
+        let mut tx = tx_min - (tx_min.rem_euclid(tstep));
+        while tx <= tx_max {
+            let mut ty = ty_min - (ty_min.rem_euclid(tstep));
+            while ty <= ty_max {
                 let world = Vec2::new(tx as f32, ty as f32);
+                let biome = Biome::at(world);
+                let b = biome.base_color();
+                // Subtle deterministic per-tile jitter so the ground isn't flat
+                let hash = tile_hash(tx, ty);
+                let jig = ((hash & 0xff) as f32 / 255.0 - 0.5) * 0.04;
+                let col = [
+                    (b[0] + jig).clamp(0.02, 1.0),
+                    (b[1] + jig).clamp(0.02, 1.0),
+                    (b[2] + jig).clamp(0.02, 1.0),
+                    1.0,
+                ];
                 let (sx, sy) = world_to_screen(world, w, h, self.state.cam, dpr);
-                push_quad(&mut self.verts, sx, sy,
-                    [0.10, 0.09, 0.13, 1.0],
-                    TILE_W * dpr * 1.95, 6.0, [0.0, 0.0]);
+                push_quad(&mut self.verts, sx, sy, col,
+                    TILE_W * dpr * (tstep as f32) * 1.05, 3.0, [0.0, 0.0]);
+                ty += tstep;
             }
+            tx += tstep;
         }
 
         // Sort entities by world Y for depth
@@ -586,6 +608,7 @@ impl App {
                 (EntityKind::Projectile, _, Some(ProjectileKind::Arrow)) => 30.0,
                 (EntityKind::Projectile, _, Some(ProjectileKind::Bolt))  => 31.0,
                 (EntityKind::Projectile, _, None) => 30.0,
+                (EntityKind::Landmark, _, _) => 40.0,
             };
             let extra = match c.view.kind {
                 EntityKind::Echo => [(c.view.hue as f32) * 0.1, 0.0],
@@ -594,6 +617,7 @@ impl App {
             };
             let size = match c.view.kind {
                 EntityKind::Projectile => ENTITY_PIXEL_SIZE * dpr * 0.55,
+                EntityKind::Landmark => LANDMARK_PIXEL_SIZE * dpr,
                 _ => ENTITY_PIXEL_SIZE * dpr,
             };
             push_quad(&mut self.verts, sx, sy, color, size, kind_id, extra);
@@ -646,12 +670,17 @@ impl App {
             (self.state.self_hp.max(0) as f32 / self.state.self_hp_max as f32 * 100.0) as i32
         } else { 0 };
         let class_label = Class::from_name(&self.state.name).label();
+        let me_pos = self.state.me
+            .and_then(|m| self.state.entities.get(&m))
+            .map(|c| c.view.pos)
+            .unwrap_or(Vec2::ZERO);
+        let biome = Biome::at(me_pos).label();
         let st = if self.state.dead {
             self.state.death_msg.clone().unwrap_or_else(|| "You are dead.".into())
         } else {
-            format!("{class_label} · HP {}/{} ({hp_pct}%) · tick {} · epoch {} ({})",
+            format!("{class_label} · {biome} · HP {}/{} ({hp_pct}%) · epoch {} ({})",
                 self.state.self_hp.max(0), self.state.self_hp_max,
-                self.state.last_tick, self.state.epoch, self.state.epoch_theme)
+                self.state.epoch, self.state.epoch_theme)
         };
         self.hud.status.set_inner_text(&st);
 
@@ -695,12 +724,20 @@ fn hue_to_rgb(hue: u16, kind: EntityKind, flash: u8) -> [f32; 4] {
         EntityKind::Mob => 0.7,
         EntityKind::Echo => 0.55,
         EntityKind::Projectile => 0.8,
+        EntityKind::Landmark => 0.35,
     }, match kind {
         EntityKind::Mob => 0.85,
+        EntityKind::Landmark => 0.9,
         _ => 1.0,
     });
     let (r, g, b) = match kind {
-        EntityKind::Mob => (0.85, 0.25 + r * 0.1, 0.25 + g * 0.1),
+        EntityKind::Mob => match hue {
+            // hue field now encodes disposition (0 = hostile red, 90 = skittish green, 45 = neutral amber)
+            0  => (0.78, 0.26, 0.26),
+            45 => (0.70, 0.58, 0.34),
+            90 => (0.44, 0.72, 0.48),
+            _  => (r, g, b),
+        },
         _ => (r, g, b),
     };
     let boost = if flash > 0 { 0.6 } else { 0.0 };
@@ -726,6 +763,15 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
         4 => (t, p, v),
         _ => (v, p, q),
     }
+}
+
+fn tile_hash(x: i32, y: i32) -> u32 {
+    let mut h: u32 = 2166136261;
+    for b in (x as i64).to_le_bytes().iter().chain((y as i64).to_le_bytes().iter()) {
+        h ^= *b as u32;
+        h = h.wrapping_mul(16777619);
+    }
+    h
 }
 
 fn world_to_screen(p: Vec2, w: f32, h: f32, cam: Vec2, dpr: f32) -> (f32, f32) {
@@ -1006,10 +1052,28 @@ void main() {
         float pulse = 0.85 + 0.15 * sin(u_time * 8.0);
         vec3 c = mix(vec3(0.55, 0.35, 1.0), vec3(1.0, 0.9, 1.0), core);
         outColor = vec4(c * pulse, alpha);
+    } else if (kind == 40) {
+        // Landmark: tall vertical obelisk with a glow
+        vec2 p = v_uv;
+        float shaft = step(abs(p.x), 0.09) * step(-0.45, p.y) * step(p.y, 0.38);
+        float capstone = step(abs(p.x), 0.16) * step(-0.50, p.y) * step(p.y, -0.34);
+        float body = max(shaft, capstone);
+        float glow = 1.0 - smoothstep(0.0, 0.45, length(p * vec2(2.6, 1.0)));
+        float alpha = body + glow * 0.25;
+        if (alpha < 0.02) discard;
+        float pulse = 0.65 + 0.35 * sin(u_time * 0.9);
+        vec3 stone = v_color.rgb * 0.85 + vec3(0.12, 0.10, 0.14);
+        vec3 lit = stone * 1.35 + vec3(0.10, 0.08, 0.14);
+        vec3 c = mix(stone * 0.55, lit, body);
+        c = mix(c, c + vec3(0.25, 0.18, 0.35), glow * 0.4 * pulse);
+        outColor = vec4(c, alpha);
     } else if (kind == 3) {
-        // Tile faint quad
-        if (d > 0.5) discard;
-        outColor = vec4(v_color.rgb, 0.55);
+        // Ground tile — soft diamond falloff for organic biome blending
+        vec2 q = v_uv;
+        float dia = abs(q.x) + abs(q.y);
+        float a = 1.0 - smoothstep(0.35, 0.55, dia);
+        if (a < 0.02) discard;
+        outColor = vec4(v_color.rgb, a * v_color.a);
     } else if (kind == 4) {
         // HP bar background and fill
         float ratio = v_extra.x;

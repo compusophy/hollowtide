@@ -29,8 +29,8 @@ const WORLD_KEY: &str = "world_snapshot_v1";
 
 // ---- Tunables ----
 const SNAPSHOT_INTERVAL_SECS: u64 = 30;
-const MOB_TARGET_COUNT: usize = 24;
-const MOB_AGGRO_RANGE: f32 = 6.0;
+const MOB_TARGET_COUNT: usize = 80;
+const MOB_AGGRO_RANGE: f32 = 4.2;
 const MOB_ATTACK_RANGE: f32 = 1.4;
 const MOB_ATTACK_DAMAGE: i32 = 8;
 const MOB_ATTACK_COOLDOWN: u32 = 18;
@@ -43,10 +43,60 @@ const FRAGMENTS: &[&str] = &[
     "Half-Coin", "Threadbare Pennon", "Salt-Carved Eye",
     "Hollow Reed", "Pale Knucklebone", "Ember Lens",
 ];
-const MOB_NAMES: &[&str] = &[
-    "Hollow Knight", "Ash Wretch", "Pale Stalker", "Cinder Imp",
-    "Bone Mire", "Veil-Walker", "Smoke Hound",
+
+fn mob_pool(biome: Biome) -> &'static [(&'static str, Disposition)] {
+    match biome {
+        Biome::EmbertidePlains => &[
+            ("Ember Deer",       Disposition::Skittish),
+            ("Cinder Hare",      Disposition::Skittish),
+            ("Brushfire Boar",   Disposition::Neutral),
+            ("Ash Wretch",       Disposition::Neutral),
+        ],
+        Biome::FrostfallRidge => &[
+            ("Frost Elk",        Disposition::Skittish),
+            ("Rime Wolf",        Disposition::Neutral),
+            ("Ice-Veiled Yak",   Disposition::Neutral),
+            ("Pale Stalker",     Disposition::Hostile),
+        ],
+        Biome::HollowForest => &[
+            ("Hollow Fawn",      Disposition::Skittish),
+            ("Moss Bear",        Disposition::Neutral),
+            ("Veil-Walker",      Disposition::Neutral),
+            ("Thornkin",         Disposition::Hostile),
+        ],
+        Biome::BoneMarshes => &[
+            ("Bog Heron",        Disposition::Skittish),
+            ("Bone Mire",        Disposition::Neutral),
+            ("Marsh Wight",      Disposition::Hostile),
+            ("Salt Crawler",     Disposition::Neutral),
+        ],
+        Biome::AshfallRuins => &[
+            ("Hollow Knight",    Disposition::Hostile),
+            ("Cinder Imp",       Disposition::Hostile),
+            ("Rusted Revenant",  Disposition::Hostile),
+            ("Smoke Hound",      Disposition::Hostile),
+        ],
+    }
+}
+
+const LANDMARK_NAMES: &[&str] = &[
+    "Standing Stone", "Ember Shrine", "Broken Altar", "Carved Cairn",
+    "Hanging Lantern", "Pale Obelisk", "Soul-Post", "Tide Marker",
+    "Hollow Pillar", "Ash-Warded Stone", "Veiled Monolith", "Bone Spire",
 ];
+
+fn wander_step(m: &mut Mob, rolls: &[(EntityId, Vec2)], half: f32, dt: f32, speed_mul: f32) {
+    if let Some((_, off)) = rolls.iter().find(|(id, _)| *id == m.id) {
+        let nx = (m.pos.x + off.x).clamp(-half, half);
+        let ny = (m.pos.y + off.y).clamp(-half, half);
+        m.wander_to = Vec2::new(nx, ny);
+    }
+    let dx = m.wander_to.x - m.pos.x;
+    let dy = m.wander_to.y - m.pos.y;
+    let l = (dx * dx + dy * dy).sqrt().max(1e-4);
+    m.pos.x = (m.pos.x + dx / l * MOB_MOVE_SPEED * speed_mul * dt).clamp(-half, half);
+    m.pos.y = (m.pos.y + dy / l * MOB_MOVE_SPEED * speed_mul * dt).clamp(-half, half);
+}
 const PLAYER_RESPAWN_HP_FRAC: f32 = 0.7;
 
 // ===================== STATE =====================
@@ -87,6 +137,8 @@ struct Player {
 struct Mob {
     id: EntityId,
     name: String,
+    biome: Biome,
+    disposition: Disposition,
     pos: Vec2,
     facing: f32,
     hp: i32,
@@ -95,6 +147,15 @@ struct Mob {
     last_attack_tick: Tick,
     wander_to: Vec2,
     flash: u8,
+}
+
+#[derive(Clone)]
+struct Landmark {
+    id: EntityId,
+    name: String,
+    pos: Vec2,
+    biome: Biome,
+    hue: u16,
 }
 
 #[derive(Clone)]
@@ -155,6 +216,7 @@ struct World {
     mobs: HashMap<EntityId, Mob>,
     echoes: HashMap<EntityId, Echo>,
     projectiles: HashMap<EntityId, Projectile>,
+    landmarks: HashMap<EntityId, Landmark>,
     chronicle: VecDeque<String>,
     pending_events: Vec<WorldEvent>,
     pending_personal: Vec<(EntityId, ServerMsg)>,
@@ -172,13 +234,32 @@ impl World {
             mobs: HashMap::new(),
             echoes: HashMap::new(),
             projectiles: HashMap::new(),
+            landmarks: HashMap::new(),
             chronicle: VecDeque::with_capacity(CHRONICLE_KEEP),
             pending_events: Vec::new(),
             pending_personal: Vec::new(),
             rng: rand::rngs::StdRng::seed_from_u64(0xC0FFEE_DEAD_BEEF),
         };
         for _ in 0..MOB_TARGET_COUNT { w.spawn_mob(); }
+        w.spawn_landmarks();
         w
+    }
+
+    fn spawn_landmarks(&mut self) {
+        // Scattered on a ring between middle-biome edge and map edge.
+        let count = LANDMARK_COUNT;
+        let half = (WORLD_TILES as f32) / 2.0 - 6.0;
+        for i in 0..count {
+            let t = i as f32 / count as f32;
+            let angle = t * std::f32::consts::TAU;
+            let r = BIOME_RADIUS + 10.0 + self.rng.gen_range(0.0..(half - BIOME_RADIUS - 12.0).max(0.0));
+            let pos = Vec2::new(r * angle.cos(), r * angle.sin());
+            let biome = Biome::at(pos);
+            let id = self.alloc_id();
+            let name = LANDMARK_NAMES[i % LANDMARK_NAMES.len()].to_string();
+            let hue = ((biome.idx() as u16) * 67 + 37) % 360;
+            self.landmarks.insert(id, Landmark { id, name, pos, biome, hue });
+        }
     }
 
     fn alloc_id(&mut self) -> EntityId { let i = self.next_id; self.next_id += 1; i }
@@ -186,9 +267,15 @@ impl World {
     fn spawn_mob(&mut self) {
         let id = self.alloc_id();
         let pos = self.random_open_tile();
-        let name = MOB_NAMES[self.rng.gen_range(0..MOB_NAMES.len())].to_string();
+        let biome = Biome::at(pos);
+        let pool = mob_pool(biome);
+        let (name, dispo) = pool[self.rng.gen_range(0..pool.len())];
         self.mobs.insert(id, Mob {
-            id, name, pos, facing: 0.0,
+            id,
+            name: name.to_string(),
+            biome,
+            disposition: dispo,
+            pos, facing: 0.0,
             hp: MOB_BASE_HP, hp_max: MOB_BASE_HP,
             target: None, last_attack_tick: 0,
             wander_to: pos, flash: 0,
@@ -356,6 +443,9 @@ impl World {
             let (dead, pos, mob_name) = if let Some(m) = self.mobs.get_mut(id) {
                 m.hp -= WARRIOR_CLEAVE_DAMAGE;
                 m.flash = 3;
+                if m.disposition != Disposition::Hostile {
+                    m.disposition = Disposition::Hostile;
+                }
                 (m.hp <= 0, m.pos, m.name.clone())
             } else { continue };
             self.pending_events.push(WorldEvent::Damage {
@@ -442,6 +532,9 @@ impl World {
                     let (dead, mob_name) = if let Some(m) = self.mobs.get_mut(&h.target) {
                         m.hp -= h.damage;
                         m.flash = 3;
+                        if m.disposition != Disposition::Hostile {
+                            m.disposition = Disposition::Hostile;
+                        }
                         (m.hp <= 0, m.name.clone())
                     } else { continue };
                     self.pending_events.push(WorldEvent::Damage {
@@ -541,7 +634,8 @@ impl World {
 
         for m in self.mobs.values_mut() {
             if m.flash > 0 { m.flash -= 1; }
-            // pick or refresh target
+
+            // Find nearest player regardless of disposition (we need it for skittish + hostile).
             let mut nearest: Option<(EntityId, Vec2, f32)> = None;
             for (pid, pp, alive) in &player_positions {
                 if !*alive { continue; }
@@ -550,29 +644,44 @@ impl World {
                     nearest = Some((*pid, *pp, d));
                 }
             }
-            m.target = nearest.map(|t| t.0);
-            if let Some((_, target_pos, dist)) = nearest {
-                if dist > MOB_ATTACK_RANGE {
-                    let dx = target_pos.x - m.pos.x;
-                    let dy = target_pos.y - m.pos.y;
-                    let l = (dx*dx + dy*dy).sqrt().max(1e-4);
-                    m.pos.x += dx / l * MOB_MOVE_SPEED * dt;
-                    m.pos.y += dy / l * MOB_MOVE_SPEED * dt;
-                    m.facing = dy.atan2(dx);
-                } else if self.tick.saturating_sub(m.last_attack_tick) >= MOB_ATTACK_COOLDOWN as u64 {
-                    m.last_attack_tick = self.tick;
+
+            match m.disposition {
+                Disposition::Hostile => {
+                    m.target = nearest.map(|t| t.0);
+                    if let Some((_, target_pos, dist)) = nearest {
+                        if dist > MOB_ATTACK_RANGE {
+                            let dx = target_pos.x - m.pos.x;
+                            let dy = target_pos.y - m.pos.y;
+                            let l = (dx*dx + dy*dy).sqrt().max(1e-4);
+                            m.pos.x += dx / l * MOB_MOVE_SPEED * dt;
+                            m.pos.y += dy / l * MOB_MOVE_SPEED * dt;
+                            m.facing = dy.atan2(dx);
+                        } else if self.tick.saturating_sub(m.last_attack_tick) >= MOB_ATTACK_COOLDOWN as u64 {
+                            m.last_attack_tick = self.tick;
+                        }
+                    } else {
+                        wander_step(m, &wander_rolls, half, dt, 0.4);
+                    }
                 }
-            } else {
-                if let Some((_, off)) = wander_rolls.iter().find(|(id, _)| *id == m.id) {
-                    let nx = (m.pos.x + off.x).clamp(-half, half);
-                    let ny = (m.pos.y + off.y).clamp(-half, half);
-                    m.wander_to = Vec2::new(nx, ny);
+                Disposition::Skittish => {
+                    m.target = None;
+                    if let Some((_, pp, dist)) = nearest {
+                        // flee directly away
+                        let dx = m.pos.x - pp.x;
+                        let dy = m.pos.y - pp.y;
+                        let l = (dx*dx + dy*dy).sqrt().max(1e-4);
+                        let speed = if dist < 2.5 { MOB_MOVE_SPEED * 1.3 } else { MOB_MOVE_SPEED * 0.9 };
+                        m.pos.x = (m.pos.x + dx / l * speed * dt).clamp(-half, half);
+                        m.pos.y = (m.pos.y + dy / l * speed * dt).clamp(-half, half);
+                        m.facing = dy.atan2(dx);
+                    } else {
+                        wander_step(m, &wander_rolls, half, dt, 0.3);
+                    }
                 }
-                let dx = m.wander_to.x - m.pos.x;
-                let dy = m.wander_to.y - m.pos.y;
-                let l = (dx*dx + dy*dy).sqrt().max(1e-4);
-                m.pos.x += dx / l * (MOB_MOVE_SPEED * 0.4) * dt;
-                m.pos.y += dy / l * (MOB_MOVE_SPEED * 0.4) * dt;
+                Disposition::Neutral => {
+                    m.target = None;
+                    wander_step(m, &wander_rolls, half, dt, 0.35);
+                }
             }
         }
 
@@ -737,7 +846,13 @@ impl World {
                 pos: m.pos, facing: m.facing,
                 hp: m.hp, hp_max: m.hp_max,
                 name: m.name.clone(),
-                badge: 0, hue: 0, flash: m.flash,
+                badge: m.biome.idx() as u32,
+                hue: match m.disposition {
+                    Disposition::Hostile => 0,
+                    Disposition::Skittish => 90,
+                    Disposition::Neutral => 45,
+                },
+                flash: m.flash,
                 class: None,
                 proj_kind: None,
             });
@@ -774,6 +889,19 @@ impl World {
                 flash: 0,
                 class: None,
                 proj_kind: Some(p.kind),
+            });
+        }
+        for lm in self.landmarks.values() {
+            entities.push(EntityView {
+                id: lm.id, kind: EntityKind::Landmark,
+                pos: lm.pos, facing: 0.0,
+                hp: 0, hp_max: 0,
+                name: lm.name.clone(),
+                badge: lm.biome.idx() as u32,
+                hue: lm.hue,
+                flash: 0,
+                class: None,
+                proj_kind: None,
             });
         }
         let chronicle_recent: Vec<String> = self.chronicle.iter().rev().take(6).cloned().collect();

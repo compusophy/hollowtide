@@ -9,7 +9,7 @@ pub const TICK_HZ: u32 = 20;
 pub const ECHO_FRAME_HZ: u32 = 10;
 pub const ECHO_DURATION_SECS: u32 = 10;
 pub const ECHO_FRAME_COUNT: usize = (ECHO_FRAME_HZ * ECHO_DURATION_SECS) as usize;
-pub const WORLD_TILES: i32 = 64;
+pub const WORLD_TILES: i32 = WORLD_TILES_MAJOR;
 pub const PLAYER_BASE_HP: i32 = 100;
 pub const MOB_BASE_HP: i32 = 40;
 pub const PLAYER_MOVE_SPEED: f32 = 4.0; // tiles per second
@@ -17,8 +17,12 @@ pub const ATTACK_RANGE: f32 = 1.5;
 pub const ATTACK_COOLDOWN_TICKS: u32 = 8; // ~0.4s
 pub const ATTACK_DAMAGE: i32 = 12;
 pub const WITNESS_RANGE: f32 = 0.8;
+pub const WORLD_TILES_MAJOR: i32 = 200; // open-world size (linear)
 pub const WITNESS_TICKS_REQUIRED: u32 = 200; // 10s
 pub const EXORCISE_DAMAGE: i32 = 1;
+
+pub const BIOME_RADIUS: f32 = 42.0; // distance from origin where biomes start
+pub const LANDMARK_COUNT: usize = 12;
 
 // Combat tuning — class-differentiated
 pub const WARRIOR_CLEAVE_RANGE: f32 = 1.8;
@@ -68,6 +72,78 @@ pub enum EntityKind {
     Mob,
     Echo,
     Projectile,
+    Landmark,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Disposition {
+    /// Doesn't aggro first. Becomes Hostile if attacked.
+    Neutral,
+    /// Aggros anything in range (current behavior). Roguelike.
+    Hostile,
+    /// Flees when player nearby.
+    Skittish,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Biome {
+    /// Central warm plains — starting area, mostly neutral wildlife.
+    EmbertidePlains,
+    /// Cold northern ridges.
+    FrostfallRidge,
+    /// Dark wooded west.
+    HollowForest,
+    /// Sickly southern marshes.
+    BoneMarshes,
+    /// Ruined eastern frontier — hostile mobs concentrate here.
+    AshfallRuins,
+}
+
+impl Biome {
+    /// Deterministic biome selection by world position. Radial+sector layout:
+    /// small central Embertide Plains, then four quadrant biomes beyond.
+    pub fn at(pos: Vec2) -> Biome {
+        let r = (pos.x * pos.x + pos.y * pos.y).sqrt();
+        if r < BIOME_RADIUS { return Biome::EmbertidePlains; }
+        // Four cardinal quadrants based on atan2. 0 east, π/2 south (y grows down).
+        let a = pos.y.atan2(pos.x); // -π..π
+        // Bands (each π/2 wide), rotated by π/4 so axis-aligned splits look clean.
+        let sector = ((a + core::f32::consts::PI) / (core::f32::consts::PI * 0.5)) as i32;
+        match sector.rem_euclid(4) {
+            0 => Biome::HollowForest,    // west-ish
+            1 => Biome::FrostfallRidge,  // north-ish
+            2 => Biome::AshfallRuins,    // east-ish
+            _ => Biome::BoneMarshes,     // south-ish
+        }
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            Biome::EmbertidePlains => "Embertide Plains",
+            Biome::FrostfallRidge  => "Frostfall Ridge",
+            Biome::HollowForest    => "Hollow Forest",
+            Biome::BoneMarshes     => "Bone Marshes",
+            Biome::AshfallRuins    => "Ashfall Ruins",
+        }
+    }
+    /// Base tile color (linear RGB). Client shader adds noise variation on top.
+    pub fn base_color(&self) -> [f32; 3] {
+        match self {
+            Biome::EmbertidePlains => [0.30, 0.16, 0.11],
+            Biome::FrostfallRidge  => [0.14, 0.20, 0.30],
+            Biome::HollowForest    => [0.10, 0.18, 0.12],
+            Biome::BoneMarshes     => [0.18, 0.20, 0.10],
+            Biome::AshfallRuins    => [0.22, 0.18, 0.22],
+        }
+    }
+    pub fn idx(&self) -> u8 {
+        match self {
+            Biome::EmbertidePlains => 0,
+            Biome::FrostfallRidge  => 1,
+            Biome::HollowForest    => 2,
+            Biome::BoneMarshes     => 3,
+            Biome::AshfallRuins    => 4,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
