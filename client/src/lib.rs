@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use js_sys::{ArrayBuffer, Uint8Array};
-use shared::*;
+use shared::{Class, *};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{
@@ -549,13 +549,17 @@ impl App {
         for c in &ents {
             let (sx, sy) = world_to_screen(c.view.pos, w, h, self.state.cam, dpr);
             let color = hue_to_rgb(c.view.hue, c.view.kind, c.view.flash);
-            let kind_id = match c.view.kind {
-                EntityKind::Player => 0.0,
-                EntityKind::Mob => 1.0,
-                EntityKind::Echo => 2.0,
+            let kind_id = match (c.view.kind, c.view.class) {
+                (EntityKind::Player, Some(Class::Warrior))  => 10.0,
+                (EntityKind::Player, Some(Class::Archer))   => 11.0,
+                (EntityKind::Player, Some(Class::Magician)) => 12.0,
+                (EntityKind::Player, None) => 0.0,
+                (EntityKind::Mob, _) => 1.0,
+                (EntityKind::Echo, _) => 2.0,
             };
             let extra = match c.view.kind {
                 EntityKind::Echo => [(c.view.hue as f32) * 0.1, 0.0],
+                EntityKind::Player => [c.view.facing, 0.0],
                 _ => [0.0, 0.0],
             };
             let size = ENTITY_PIXEL_SIZE * dpr;
@@ -608,10 +612,11 @@ impl App {
         let hp_pct = if self.state.self_hp_max > 0 {
             (self.state.self_hp.max(0) as f32 / self.state.self_hp_max as f32 * 100.0) as i32
         } else { 0 };
+        let class_label = Class::from_name(&self.state.name).label();
         let st = if self.state.dead {
             self.state.death_msg.clone().unwrap_or_else(|| "You are dead.".into())
         } else {
-            format!("HP {}/{} ({hp_pct}%) — Tick {} — Epoch {} ({})",
+            format!("{class_label} · HP {}/{} ({hp_pct}%) · tick {} · epoch {} ({})",
                 self.state.self_hp.max(0), self.state.self_hp_max,
                 self.state.last_tick, self.state.epoch, self.state.epoch_theme)
         };
@@ -831,16 +836,72 @@ uniform float u_time;
 
 out vec4 outColor;
 
+// Rotate a 2D vector by angle (radians).
+vec2 rot2(vec2 p, float a) {
+    float c = cos(a); float s = sin(a);
+    return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+
 void main() {
     float d = length(v_uv);
     int kind = int(v_kind);
 
     if (kind == 0) {
-        // Player: filled circle with darker rim, glow
+        // Player (fallback, no class): filled circle with darker rim, glow
         if (d > 0.5) discard;
         float rim = smoothstep(0.42, 0.5, d);
         vec3 c = mix(v_color.rgb, v_color.rgb * 0.35, rim);
         c += 0.07 * (1.0 - d * 2.0);
+        outColor = vec4(c, 1.0);
+    } else if (kind == 10) {
+        // WARRIOR: hexagonal body, thick dark rim, shoulder highlight
+        // hex is max of |x|/cos(30) and (|x|*sin(30) + |y|)
+        vec2 q = abs(v_uv);
+        float hex = max(q.x * 1.1547, q.x * 0.5774 + q.y);
+        if (hex > 0.44) discard;
+        float rim = smoothstep(0.36, 0.44, hex);
+        vec3 base = v_color.rgb * 0.85 + vec3(0.12, 0.06, 0.04);
+        vec3 c = mix(base, base * 0.28, rim);
+        // top "helm" band
+        float helm = smoothstep(0.18, 0.30, -v_uv.y) * (1.0 - rim);
+        c = mix(c, c * 1.35 + vec3(0.08), helm * 0.55);
+        // belt line
+        float belt = 1.0 - smoothstep(0.0, 0.035, abs(v_uv.y - 0.08));
+        c = mix(c, c * 0.5, belt * 0.8 * (1.0 - rim));
+        outColor = vec4(c, 1.0);
+    } else if (kind == 11) {
+        // ARCHER: lean diamond body with a chevron on top
+        float dd = abs(v_uv.x) * 1.55 + abs(v_uv.y);
+        if (dd > 0.56) discard;
+        float rim = smoothstep(0.48, 0.56, dd);
+        vec3 base = v_color.rgb * 0.70 + vec3(0.02, 0.10, 0.04);
+        vec3 c = mix(base, base * 0.30, rim);
+        // chevron
+        float chev = smoothstep(0.10, 0.03, abs(v_uv.x) + v_uv.y + 0.22) * step(v_uv.y, -0.05);
+        c = mix(c, c * 1.45 + vec3(0.05, 0.10, 0.05), chev * 0.8);
+        // quiver dot
+        float quiver = 1.0 - smoothstep(0.0, 0.05, distance(v_uv, vec2(0.22, 0.08)));
+        c = mix(c, vec3(0.92, 0.78, 0.42), quiver * (1.0 - rim) * 0.9);
+        outColor = vec4(c, 1.0);
+    } else if (kind == 12) {
+        // MAGICIAN: circle core + three orbiting runes
+        float body = step(d, 0.30);
+        float body_rim = smoothstep(0.22, 0.30, d) * body;
+        float mote = 0.0;
+        for (int i = 0; i < 3; i++) {
+            float a = u_time * 1.6 + float(i) * 2.0944;
+            vec2 p = vec2(cos(a), sin(a)) * 0.44;
+            mote = max(mote, 1.0 - smoothstep(0.0, 0.055, distance(v_uv, p)));
+        }
+        float alpha = body + mote;
+        if (alpha < 0.02) discard;
+        vec3 base = v_color.rgb * 0.55 + vec3(0.08, 0.05, 0.18);
+        vec3 c = mix(base, base * 0.30, body_rim);
+        // inner sigil
+        float sigil = 1.0 - smoothstep(0.0, 0.04, abs(d - 0.14));
+        c = mix(c, c * 1.6 + vec3(0.2, 0.15, 0.35), sigil * body * 0.7);
+        // motes glow
+        c = mix(c, vec3(0.95, 0.82, 1.0), mote * 0.95);
         outColor = vec4(c, 1.0);
     } else if (kind == 1) {
         // Mob: diamond

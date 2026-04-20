@@ -67,6 +67,7 @@ impl EchoFrameRing {
 struct Player {
     id: EntityId,
     name: String,
+    class: Class,
     pos: Vec2,
     facing: f32,
     hp: i32,
@@ -100,6 +101,7 @@ struct Mob {
 struct Echo {
     id: EntityId,
     of_player: String,
+    class: Class,
     anchor: Vec2,
     hue: u16,
     frames: Vec<EchoFrame>,
@@ -114,6 +116,7 @@ struct Echo {
 struct EchoSnap {
     id: EntityId,
     of_player: String,
+    class: Class,
     anchor: Vec2,
     hue: u16,
     frames: Vec<EchoFrame>,
@@ -190,8 +193,9 @@ impl World {
     fn add_player(&mut self, name: String, tx: mpsc::UnboundedSender<Vec<u8>>) -> EntityId {
         let id = self.alloc_id();
         let pos = self.random_open_tile();
+        let class = Class::from_name(&name);
         self.players.insert(id, Player {
-            id, name, pos, facing: 0.0,
+            id, name, class, pos, facing: 0.0,
             hp: PLAYER_BASE_HP, hp_max: PLAYER_BASE_HP,
             move_dir: Vec2::ZERO, last_attack_tick: 0,
             kills: 0, history: EchoFrameRing::new(),
@@ -523,13 +527,13 @@ impl World {
     }
 
     fn kill_player(&mut self, pid: EntityId) {
-        let (name, pos, hue, frames) = match self.players.get(&pid) {
+        let (name, class, pos, hue, frames) = match self.players.get(&pid) {
             Some(p) => {
                 let frames = p.history.snapshot();
                 let frames = if frames.is_empty() {
                     vec![EchoFrame { pos: p.pos, facing: p.facing, action: 3 }]
                 } else { frames };
-                (p.name.clone(), p.pos, hue_from_name(&p.name), frames)
+                (p.name.clone(), p.class, p.pos, hue_from_name(&p.name), frames)
             }
             None => return,
         };
@@ -541,7 +545,7 @@ impl World {
         let eid = self.alloc_id();
         let cur = self.tick;
         self.echoes.insert(eid, Echo {
-            id: eid, of_player: name.clone(), anchor: pos, hue,
+            id: eid, of_player: name.clone(), class, anchor: pos, hue,
             frames, frame_idx: 0, last_frame_tick: cur,
             witnesses: 0, hp: ECHO_HP_MAX, born_tick: cur,
         });
@@ -570,6 +574,7 @@ impl World {
                 badge: p.kills,
                 hue: hue_from_name(&p.name),
                 flash: p.flash,
+                class: Some(p.class),
             });
         }
         for m in self.mobs.values() {
@@ -579,6 +584,7 @@ impl World {
                 hp: m.hp, hp_max: m.hp_max,
                 name: m.name.clone(),
                 badge: 0, hue: 0, flash: m.flash,
+                class: None,
             });
         }
         for e in self.echoes.values() {
@@ -596,6 +602,7 @@ impl World {
                 badge: e.witnesses,
                 hue: e.hue,
                 flash: action,
+                class: Some(e.class),
             });
         }
         let chronicle_recent: Vec<String> = self.chronicle.iter().rev().take(6).cloned().collect();
@@ -610,7 +617,7 @@ impl World {
             next_id: self.next_id,
             chronicle: self.chronicle.iter().cloned().collect(),
             echoes: self.echoes.values().map(|e| EchoSnap {
-                id: e.id, of_player: e.of_player.clone(),
+                id: e.id, of_player: e.of_player.clone(), class: e.class,
                 anchor: e.anchor, hue: e.hue,
                 frames: e.frames.clone(),
                 witnesses: e.witnesses, hp: e.hp, born_tick: e.born_tick,
@@ -627,7 +634,7 @@ impl World {
         self.echoes.clear();
         for es in s.echoes {
             self.echoes.insert(es.id, Echo {
-                id: es.id, of_player: es.of_player,
+                id: es.id, of_player: es.of_player, class: es.class,
                 anchor: es.anchor, hue: es.hue,
                 frames: es.frames, frame_idx: 0, last_frame_tick: self.tick,
                 witnesses: es.witnesses, hp: es.hp, born_tick: es.born_tick,

@@ -49,6 +49,35 @@ pub enum EntityKind {
     Echo,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Class {
+    Warrior,
+    Archer,
+    Magician,
+}
+
+impl Class {
+    pub fn from_name(name: &str) -> Self {
+        let mut h: u32 = 2166136261;
+        for b in name.as_bytes() {
+            h ^= *b as u32;
+            h = h.wrapping_mul(16777619);
+        }
+        match h % 3 {
+            0 => Class::Warrior,
+            1 => Class::Archer,
+            _ => Class::Magician,
+        }
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            Class::Warrior => "Warrior",
+            Class::Archer => "Archer",
+            Class::Magician => "Magician",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EntityView {
     pub id: EntityId,
@@ -60,10 +89,12 @@ pub struct EntityView {
     pub name: String,
     /// for echoes: how many witnesses, for players: kills, for mobs: ignored
     pub badge: u32,
-    /// for echoes: hue (derived from owner name); 0..360
+    /// hue (derived from owner name for players/echoes); 0..360
     pub hue: u16,
-    /// 0 normal, 1 attacking-this-tick (visual flash)
+    /// 0 normal, >0 attacking-this-tick (visual flash ticks remaining)
     pub flash: u8,
+    /// class archetype — only meaningful for Player + Echo
+    pub class: Option<Class>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
