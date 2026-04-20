@@ -1,0 +1,9 @@
+/target
+/web/pkg
+*.redb
+*.redb-journal
+*.redb-lock
+.DS_Store
+.vscode
+.idea
+*.iml

@@ -1,0 +1,17 @@
+[package]
+name = "server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+shared = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }
+
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+tower-http = { version = "0.5", features = ["fs", "cors"] }
+futures-util = "0.3"
+redb = "2"
+rand = "0.8"

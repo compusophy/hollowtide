@@ -1,0 +1,32 @@
+[package]
+name = "client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+shared = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }
+
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "Window", "Document", "Element", "HtmlElement", "HtmlInputElement",
+  "HtmlCanvasElement", "Location", "Performance",
+  "KeyboardEvent", "MouseEvent", "MessageEvent", "Event", "EventTarget",
+  "WebSocket", "BinaryType",
+  "WebGl2RenderingContext", "WebGlBuffer", "WebGlProgram",
+  "WebGlShader", "WebGlVertexArrayObject", "WebGlUniformLocation",
+  "Node", "DomTokenList", "CssStyleDeclaration", "DomRect",
+]

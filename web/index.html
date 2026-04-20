@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HOLLOWTIDE</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #000; color: #ddd; overflow: hidden;
+    font-family: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+  }
+  canvas { display: block; image-rendering: pixelated; }
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+  #hud > * { position: absolute; }
+  #hud-status {
+    top: 10px; left: 10px;
+    background: rgba(0,0,0,0.55); padding: 6px 10px;
+    border: 1px solid #333; font-size: 13px;
+    color: #eaeaea; letter-spacing: 0.02em;
+  }
+  #hud-name {
+    top: 10px; right: 10px;
+    background: rgba(0,0,0,0.55); padding: 6px 10px;
+    border: 1px solid #333; font-size: 13px;
+    color: #eaeaea;
+  }
+  #hud-chronicle {
+    bottom: 10px; left: 10px;
+    max-width: 420px; max-height: 320px; overflow: hidden;
+    background: rgba(0,0,0,0.45); padding: 8px 10px;
+    border: 1px solid #2a2a2a; font-size: 12px;
+    white-space: pre-wrap; line-height: 1.4;
+    color: #cfcfcf;
+  }
+  #hud-chronicle::before {
+    content: "▾ chronicle";
+    display: block; margin-bottom: 4px;
+    color: #888; letter-spacing: 0.1em; font-size: 10px;
+  }
+  #hud-chat {
+    bottom: 10px; right: 10px;
+    max-width: 360px; max-height: 220px; overflow: hidden;
+    background: rgba(0,0,0,0.45); padding: 8px 10px;
+    border: 1px solid #2a2a2a; font-size: 12px;
+    white-space: pre-wrap; color: #cfcfcf;
+  }
+  #hud-chat::before {
+    content: "▾ chat";
+    display: block; margin-bottom: 4px;
+    color: #888; letter-spacing: 0.1em; font-size: 10px;
+  }
+  #hud-chat-input {
+    bottom: 50%; left: 50%; transform: translate(-50%, 50%);
+    width: 60%; max-width: 620px;
+    padding: 10px 12px; font-size: 14px;
+    background: #0a0a0a; color: #eaeaea;
+    border: 1px solid #555; outline: none;
+    pointer-events: auto;
+    font-family: inherit;
+  }
+  #help {
+    position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
+    color: #888; font-size: 11px; letter-spacing: 0.06em;
+    pointer-events: none; z-index: 11;
+    background: rgba(0,0,0,0.4); padding: 4px 10px;
+    border: 1px solid #222;
+  }
+  #title-card {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    pointer-events: none; z-index: 12;
+    text-align: center; color: #c8c2b0;
+    text-shadow: 0 0 14px #000;
+    animation: titlefade 6s ease-out forwards;
+  }
+  #title-card h1 {
+    font-size: 64px; letter-spacing: 0.4em; margin: 0;
+    font-weight: 200; color: #d8d2bf;
+  }
+  #title-card p { margin: 6px 0 0; font-size: 12px; opacity: 0.7; letter-spacing: 0.3em; }
+  @keyframes titlefade {
+    0%   { opacity: 0; }
+    20%  { opacity: 1; }
+    80%  { opacity: 1; }
+    100% { opacity: 0; }
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="title-card">
+  <h1>HOLLOWTIDE</h1>
+  <p>EMBERTIDE — EPOCH I</p>
+</div>
+<div id="help">WASD move · click to attack · E witness echo · R respawn · ENTER chat</div>
+<script type="module">
+  import init from "./pkg/client.js";
+  init().catch(err => {
+    document.body.innerHTML = "<pre style='color:#f88;padding:20px'>" + err + "</pre>";
+    console.error(err);
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["shared", "server", "client"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["alloc"] }
+shared = { path = "shared" }
+
+# Compile small + fast for wasm release
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
