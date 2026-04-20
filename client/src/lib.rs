@@ -46,14 +46,13 @@ pub fn start() -> Result<(), JsValue> {
     gl.bind_vertex_array(Some(&vao));
     gl.bind_buffer(GL::ARRAY_BUFFER, Some(&vbo));
 
-    // Layout:
-    // a_screen vec2, a_corner vec2, a_color vec4, a_size float, a_kind float, a_extra vec2
-    let stride = (2 + 2 + 4 + 1 + 1 + 2) * 4; // bytes
+    // Layout (11 floats / vertex):
+    // a_screen vec2, a_corner vec2, a_color vec4, a_kind float, a_extra vec2
+    let stride = (2 + 2 + 4 + 1 + 2) * 4; // bytes
     let mut offset = 0;
     setup_attr(&gl, &program, "a_screen", 2, stride, offset)?; offset += 2 * 4;
     setup_attr(&gl, &program, "a_corner", 2, stride, offset)?; offset += 2 * 4;
     setup_attr(&gl, &program, "a_color",  4, stride, offset)?; offset += 4 * 4;
-    setup_attr(&gl, &program, "a_size",   1, stride, offset)?; offset += 1 * 4;
     setup_attr(&gl, &program, "a_kind",   1, stride, offset)?; offset += 1 * 4;
     setup_attr(&gl, &program, "a_extra",  2, stride, offset)?; let _ = offset;
 
@@ -599,7 +598,7 @@ impl App {
             let view = js_sys::Float32Array::view(&self.verts);
             gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &view, GL::DYNAMIC_DRAW);
         }
-        let stride_floats = 2 + 2 + 4 + 1 + 1 + 2;
+        let stride_floats = 2 + 2 + 4 + 1 + 2;
         let count = (self.verts.len() / stride_floats) as i32;
         gl.draw_arrays(GL::TRIANGLES, 0, count);
     }
@@ -719,7 +718,7 @@ fn push_quad(out: &mut Vec<f32>, sx: f32, sy: f32, col: [f32; 4], size: f32, kin
                    (-half,  half, -0.5,  0.5)];
     for (ox, oy, cu, cv) in corners {
         out.extend_from_slice(&[sx + ox, sy + oy, cu, cv,
-            col[0], col[1], col[2], col[3], size, kind, extra[0], extra[1]]);
+            col[0], col[1], col[2], col[3], kind, extra[0], extra[1]]);
     }
 }
 
@@ -734,7 +733,7 @@ fn push_quad_bar(out: &mut Vec<f32>, sx: f32, sy: f32, col: [f32; 4], w: f32, h:
                    (-hw,  hh, -0.5,  0.5)];
     for (ox, oy, cu, cv) in corners {
         out.extend_from_slice(&[sx + ox, sy + oy, cu, cv,
-            col[0], col[1], col[2], col[3], w, 4.0, ratio, 0.0]);
+            col[0], col[1], col[2], col[3], 4.0, ratio, 0.0]);
     }
 }
 
