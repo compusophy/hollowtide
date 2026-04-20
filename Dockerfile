@@ -43,8 +43,10 @@ ENV HOLLOW_DB_PATH=/data/hollowtide.redb
 # PORT is injected by Railway; default to 8080 if not set.
 ENV PORT=8080
 
-# Volume mount point for persistent state.
-VOLUME ["/data"]
+# NOTE: Railway bans the VOLUME keyword — attach a volume via the Railway
+# dashboard (or `railway volume add`) mounted at /data. Pre-creating the
+# directory is fine so the server can run locally too.
+RUN mkdir -p /data
 
 EXPOSE 8080
 CMD ["/app/server"]

@@ -7,3 +7,7 @@
 .vscode
 .idea
 *.iml
+# secrets — never commit
+.env
+.env.*
+!.env.example
