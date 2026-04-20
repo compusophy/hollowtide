@@ -20,6 +20,18 @@ pub const WITNESS_RANGE: f32 = 0.8;
 pub const WITNESS_TICKS_REQUIRED: u32 = 200; // 10s
 pub const EXORCISE_DAMAGE: i32 = 1;
 
+// Combat tuning — class-differentiated
+pub const WARRIOR_CLEAVE_RANGE: f32 = 1.8;
+pub const WARRIOR_CLEAVE_ARC_RAD: f32 = 2.2;     // ~126° cone
+pub const WARRIOR_CLEAVE_DAMAGE: i32 = 10;
+pub const ARCHER_ARROW_SPEED: f32 = 14.0;         // tiles / sec
+pub const ARCHER_ARROW_DAMAGE: i32 = 14;
+pub const ARCHER_ARROW_TTL_TICKS: u32 = 40;       // 2s
+pub const MAGICIAN_BOLT_SPEED: f32 = 9.0;
+pub const MAGICIAN_BOLT_DAMAGE: i32 = 18;
+pub const MAGICIAN_BOLT_TTL_TICKS: u32 = 60;      // 3s
+pub const PROJECTILE_HIT_RADIUS: f32 = 0.7;
+
 pub type EntityId = u64;
 pub type Tick = u64;
 
@@ -40,6 +52,14 @@ impl Vec2 {
     pub fn lerp(self, o: Vec2, t: f32) -> Vec2 {
         Vec2::new(self.x + (o.x - self.x) * t, self.y + (o.y - self.y) * t)
     }
+    pub fn sub(self, o: Vec2) -> Vec2 { Vec2::new(self.x - o.x, self.y - o.y) }
+    pub fn add(self, o: Vec2) -> Vec2 { Vec2::new(self.x + o.x, self.y + o.y) }
+    pub fn scale(self, k: f32) -> Vec2 { Vec2::new(self.x * k, self.y * k) }
+    pub fn length(self) -> f32 { (self.x * self.x + self.y * self.y).sqrt() }
+    pub fn normalize(self) -> Vec2 {
+        let l = self.length();
+        if l < 1e-4 { Vec2::ZERO } else { Vec2::new(self.x / l, self.y / l) }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -47,6 +67,13 @@ pub enum EntityKind {
     Player,
     Mob,
     Echo,
+    Projectile,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ProjectileKind {
+    Arrow,
+    Bolt,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -95,6 +122,8 @@ pub struct EntityView {
     pub flash: u8,
     /// class archetype — only meaningful for Player + Echo
     pub class: Option<Class>,
+    /// only meaningful for Projectile
+    pub proj_kind: Option<ProjectileKind>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -130,6 +159,8 @@ pub enum WorldEvent {
     PlayerDied { who: String, killer: String, pos: Vec2 },
     MobSlain { who: String, mob_name: String },
     Reaping { epoch: u32, theme: String },
+    /// Visual-only: a target just took `amount` at `pos`. Client renders floating number.
+    Damage { target: EntityId, amount: i32, pos: Vec2 },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -135,6 +135,17 @@ struct WorldSnap {
     echoes: Vec<EchoSnap>,
 }
 
+struct Projectile {
+    id: EntityId,
+    kind: ProjectileKind,
+    owner: EntityId,
+    pos: Vec2,
+    vel: Vec2,
+    damage: i32,
+    ttl: u32,
+    hue: u16,
+}
+
 struct World {
     tick: Tick,
     epoch: u32,
@@ -143,6 +154,7 @@ struct World {
     players: HashMap<EntityId, Player>,
     mobs: HashMap<EntityId, Mob>,
     echoes: HashMap<EntityId, Echo>,
+    projectiles: HashMap<EntityId, Projectile>,
     chronicle: VecDeque<String>,
     pending_events: Vec<WorldEvent>,
     pending_personal: Vec<(EntityId, ServerMsg)>,
@@ -159,6 +171,7 @@ impl World {
             players: HashMap::new(),
             mobs: HashMap::new(),
             echoes: HashMap::new(),
+            projectiles: HashMap::new(),
             chronicle: VecDeque::with_capacity(CHRONICLE_KEEP),
             pending_events: Vec::new(),
             pending_personal: Vec::new(),
@@ -278,47 +291,180 @@ impl World {
     }
 
     fn try_attack(&mut self, attacker: EntityId, target: EntityId) {
-        let (pp, pname, last_atk) = match self.players.get(&attacker) {
-            Some(p) => (p.pos, p.name.clone(), p.last_attack_tick),
+        let (pp, pname, last_atk, class, hue) = match self.players.get(&attacker) {
+            Some(p) => (p.pos, p.name.clone(), p.last_attack_tick, p.class, hue_from_name(&p.name)),
             None => return,
         };
         if self.tick.saturating_sub(last_atk) < ATTACK_COOLDOWN_TICKS as u64 { return; }
 
-        // Mob target?
-        let mob_result = if let Some(m) = self.mobs.get_mut(&target) {
-            if pp.dist(m.pos) <= ATTACK_RANGE {
-                m.hp -= ATTACK_DAMAGE;
-                m.flash = 3;
-                Some((m.hp <= 0, m.name.clone()))
-            } else { None }
-        } else { None };
+        // Target direction — where the player clicked. We'll use either the target entity's
+        // position (if found) or the player's facing as a fallback.
+        let target_pos = self.mobs.get(&target).map(|m| m.pos)
+            .or_else(|| self.players.get(&target).map(|p| p.pos))
+            .or_else(|| self.echoes.get(&target).map(|e| e.anchor));
+        let Some(target_pos) = target_pos else { return };
 
-        if let Some((dead, mob_name)) = mob_result {
-            if dead { self.mobs.remove(&target); }
-            if let Some(p) = self.players.get_mut(&attacker) {
-                p.last_attack_tick = self.tick;
-                p.last_action = 2;
-                if dead { p.kills += 1; }
-            }
-            if dead {
-                self.pending_events.push(WorldEvent::MobSlain { who: pname, mob_name });
-            }
-            return;
+        // Commit the cooldown/action for the attacker regardless of class.
+        if let Some(p) = self.players.get_mut(&attacker) {
+            p.last_attack_tick = self.tick;
+            p.last_action = 2;
         }
 
-        // Player target (PvP allowed)
-        let pvp_hit = if let Some(other) = self.players.get_mut(&target) {
-            if other.alive && pp.dist(other.pos) <= ATTACK_RANGE {
-                other.hp -= ATTACK_DAMAGE;
-                other.flash = 3;
-                true
-            } else { false }
-        } else { false };
+        match class {
+            Class::Warrior => self.warrior_cleave(attacker, pp, target_pos, &pname),
+            Class::Archer => {
+                let dir = target_pos.sub(pp).normalize();
+                self.spawn_projectile(attacker, ProjectileKind::Arrow, pp, dir, hue);
+            }
+            Class::Magician => {
+                let dir = target_pos.sub(pp).normalize();
+                self.spawn_projectile(attacker, ProjectileKind::Bolt, pp, dir, hue);
+            }
+        }
+    }
 
-        if pvp_hit {
-            if let Some(p) = self.players.get_mut(&attacker) {
-                p.last_attack_tick = self.tick;
-                p.last_action = 2;
+    fn warrior_cleave(&mut self, attacker: EntityId, pp: Vec2, target_pos: Vec2, pname: &str) {
+        let forward = target_pos.sub(pp).normalize();
+        if forward.x == 0.0 && forward.y == 0.0 { return; }
+
+        // Collect targets in arc first to avoid borrow chaos.
+        let cos_half = (WARRIOR_CLEAVE_ARC_RAD * 0.5).cos();
+        let mut mob_hits: Vec<EntityId> = Vec::new();
+        for m in self.mobs.values() {
+            let to = m.pos.sub(pp);
+            let d = to.length();
+            if d > WARRIOR_CLEAVE_RANGE || d < 0.01 { continue; }
+            let n = Vec2::new(to.x / d, to.y / d);
+            if n.x * forward.x + n.y * forward.y >= cos_half {
+                mob_hits.push(m.id);
+            }
+        }
+        let mut pvp_hits: Vec<EntityId> = Vec::new();
+        for (id, p) in &self.players {
+            if *id == attacker || !p.alive { continue; }
+            let to = p.pos.sub(pp);
+            let d = to.length();
+            if d > WARRIOR_CLEAVE_RANGE || d < 0.01 { continue; }
+            let n = Vec2::new(to.x / d, to.y / d);
+            if n.x * forward.x + n.y * forward.y >= cos_half {
+                pvp_hits.push(*id);
+            }
+        }
+
+        let _ = attacker;
+        for id in &mob_hits {
+            let (dead, pos, mob_name) = if let Some(m) = self.mobs.get_mut(id) {
+                m.hp -= WARRIOR_CLEAVE_DAMAGE;
+                m.flash = 3;
+                (m.hp <= 0, m.pos, m.name.clone())
+            } else { continue };
+            self.pending_events.push(WorldEvent::Damage {
+                target: *id, amount: WARRIOR_CLEAVE_DAMAGE, pos,
+            });
+            if dead {
+                self.mobs.remove(id);
+                if let Some(a) = self.players.get_mut(&attacker) { a.kills += 1; }
+                self.pending_events.push(WorldEvent::MobSlain {
+                    who: pname.to_string(), mob_name,
+                });
+            }
+        }
+        for id in &pvp_hits {
+            let pos = if let Some(p) = self.players.get_mut(id) {
+                p.hp -= WARRIOR_CLEAVE_DAMAGE;
+                p.flash = 3;
+                p.pos
+            } else { continue };
+            self.pending_events.push(WorldEvent::Damage {
+                target: *id, amount: WARRIOR_CLEAVE_DAMAGE, pos,
+            });
+        }
+    }
+
+    fn spawn_projectile(&mut self, owner: EntityId, kind: ProjectileKind, pos: Vec2, dir: Vec2, hue: u16) {
+        if dir.x == 0.0 && dir.y == 0.0 { return; }
+        let (speed, damage, ttl) = match kind {
+            ProjectileKind::Arrow => (ARCHER_ARROW_SPEED, ARCHER_ARROW_DAMAGE, ARCHER_ARROW_TTL_TICKS),
+            ProjectileKind::Bolt  => (MAGICIAN_BOLT_SPEED, MAGICIAN_BOLT_DAMAGE, MAGICIAN_BOLT_TTL_TICKS),
+        };
+        let id = self.alloc_id();
+        self.projectiles.insert(id, Projectile {
+            id, kind, owner,
+            pos,
+            vel: Vec2::new(dir.x * speed, dir.y * speed),
+            damage, ttl, hue,
+        });
+    }
+
+    fn step_projectiles(&mut self, dt: f32) {
+        let mut remove: Vec<EntityId> = Vec::new();
+        struct Hit { target: EntityId, target_kind: EntityKind, damage: i32, pos: Vec2, owner: EntityId }
+        let mut hits: Vec<Hit> = Vec::new();
+        let half = (WORLD_TILES as f32) / 2.0;
+
+        for (pid, proj) in self.projectiles.iter_mut() {
+            proj.pos.x += proj.vel.x * dt;
+            proj.pos.y += proj.vel.y * dt;
+            if proj.ttl == 0 { remove.push(*pid); continue; }
+            proj.ttl -= 1;
+            if proj.pos.x.abs() > half || proj.pos.y.abs() > half {
+                remove.push(*pid); continue;
+            }
+            // mob collision
+            let mut hit: Option<(EntityId, EntityKind, Vec2)> = None;
+            for m in self.mobs.values() {
+                if m.pos.dist(proj.pos) <= PROJECTILE_HIT_RADIUS {
+                    hit = Some((m.id, EntityKind::Mob, m.pos));
+                    break;
+                }
+            }
+            if hit.is_none() {
+                for (pl_id, pl) in &self.players {
+                    if *pl_id == proj.owner || !pl.alive { continue; }
+                    if pl.pos.dist(proj.pos) <= PROJECTILE_HIT_RADIUS {
+                        hit = Some((*pl_id, EntityKind::Player, pl.pos));
+                        break;
+                    }
+                }
+            }
+            if let Some((tid, kind, tpos)) = hit {
+                hits.push(Hit { target: tid, target_kind: kind, damage: proj.damage, pos: tpos, owner: proj.owner });
+                remove.push(*pid);
+            }
+        }
+
+        for pid in remove { self.projectiles.remove(&pid); }
+
+        for h in hits {
+            let owner_name = self.players.get(&h.owner).map(|p| p.name.clone()).unwrap_or_default();
+            match h.target_kind {
+                EntityKind::Mob => {
+                    let (dead, mob_name) = if let Some(m) = self.mobs.get_mut(&h.target) {
+                        m.hp -= h.damage;
+                        m.flash = 3;
+                        (m.hp <= 0, m.name.clone())
+                    } else { continue };
+                    self.pending_events.push(WorldEvent::Damage {
+                        target: h.target, amount: h.damage, pos: h.pos,
+                    });
+                    if dead {
+                        self.mobs.remove(&h.target);
+                        if let Some(a) = self.players.get_mut(&h.owner) { a.kills += 1; }
+                        self.pending_events.push(WorldEvent::MobSlain {
+                            who: owner_name, mob_name,
+                        });
+                    }
+                }
+                EntityKind::Player => {
+                    if let Some(p) = self.players.get_mut(&h.target) {
+                        p.hp -= h.damage;
+                        p.flash = 3;
+                    }
+                    self.pending_events.push(WorldEvent::Damage {
+                        target: h.target, amount: h.damage, pos: h.pos,
+                    });
+                }
+                _ => {}
             }
         }
     }
@@ -440,12 +586,19 @@ impl World {
                 _ => false,
             };
             if in_range {
-                if let Some(p) = self.players.get_mut(&target_id) {
+                let pos = if let Some(p) = self.players.get_mut(&target_id) {
                     p.hp -= MOB_ATTACK_DAMAGE;
                     p.flash = 3;
-                }
+                    p.pos
+                } else { continue };
+                self.pending_events.push(WorldEvent::Damage {
+                    target: target_id, amount: MOB_ATTACK_DAMAGE, pos,
+                });
             }
         }
+
+        // -- projectile simulation --
+        self.step_projectiles(dt);
 
         // -- player movement + echo recording --
         let half_p = (WORLD_TILES as f32) / 2.0 - 1.0;
@@ -575,6 +728,7 @@ impl World {
                 hue: hue_from_name(&p.name),
                 flash: p.flash,
                 class: Some(p.class),
+                proj_kind: None,
             });
         }
         for m in self.mobs.values() {
@@ -585,6 +739,7 @@ impl World {
                 name: m.name.clone(),
                 badge: 0, hue: 0, flash: m.flash,
                 class: None,
+                proj_kind: None,
             });
         }
         for e in self.echoes.values() {
@@ -603,6 +758,22 @@ impl World {
                 hue: e.hue,
                 flash: action,
                 class: Some(e.class),
+                proj_kind: None,
+            });
+        }
+        for p in self.projectiles.values() {
+            // Represent projectile heading as facing for the shader's trail direction.
+            let facing = p.vel.y.atan2(p.vel.x);
+            entities.push(EntityView {
+                id: p.id, kind: EntityKind::Projectile,
+                pos: p.pos, facing,
+                hp: 1, hp_max: 1,
+                name: String::new(),
+                badge: 0,
+                hue: p.hue,
+                flash: 0,
+                class: None,
+                proj_kind: Some(p.kind),
             });
         }
         let chronicle_recent: Vec<String> = self.chronicle.iter().rev().take(6).cloned().collect();

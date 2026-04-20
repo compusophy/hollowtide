@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use js_sys::{ArrayBuffer, Uint8Array};
-use shared::{Class, *};
+use shared::{Class, ProjectileKind, *};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{
@@ -361,6 +361,9 @@ impl App {
                     self.flash(format!("✦ {who} slew a {mob_name}.")),
                 WorldEvent::Reaping { epoch, theme } =>
                     self.flash(format!("✶✶✶ Reaping. Epoch {epoch}: {theme} ✶✶✶")),
+                WorldEvent::Damage { target, amount, pos } => {
+                    self.spawn_damage_label(amount, target, pos);
+                }
             },
             ServerMsg::Killed { by } => {
                 self.state.dead = true;
@@ -426,6 +429,33 @@ impl App {
         if on { let _ = self.hud.chat_input.focus(); }
     }
 
+    fn spawn_damage_label(&self, amount: i32, target: EntityId, world_pos: Vec2) {
+        let Some(win) = web_sys::window() else { return };
+        let Some(doc) = win.document() else { return };
+        let Some(body) = doc.body() else { return };
+
+        let dpr = win.device_pixel_ratio() as f32;
+        let w = self.canvas.width() as f32;
+        let h = self.canvas.height() as f32;
+
+        // Prefer the target's current interpolated position (may have moved since event emitted)
+        let pos = self.state.entities.get(&target).map(|c| c.view.pos).unwrap_or(world_pos);
+        let (sx, sy) = world_to_screen(pos, w, h, self.state.cam, dpr);
+        let css_x = sx / dpr;
+        let css_y = (sy / dpr) - 40.0;
+
+        let Ok(el) = doc.create_element("div") else { return };
+        el.set_class_name("dmg-label");
+        el.set_text_content(Some(&amount.to_string()));
+        if let Ok(html_el) = el.clone().dyn_into::<HtmlElement>() {
+            let style = html_el.style();
+            let _ = style.set_property("left", &format!("{css_x}px"));
+            let _ = style.set_property("top", &format!("{css_y}px"));
+        }
+        let _ = el.set_attribute("onanimationend", "this.remove()");
+        let _ = body.append_child(&el);
+    }
+
     fn on_click(&mut self, e: &MouseEvent) {
         if self.state.dead { return; }
         let win = web_sys::window().unwrap();
@@ -449,17 +479,11 @@ impl App {
             }
         }
         let Some((id, kind, _)) = best else { return };
-        let me_id = match self.state.me { Some(x) => x, None => return };
-        let me_pos = self.state.entities.get(&me_id).map(|c| c.view.pos);
-        let target_pos = self.state.entities.get(&id).map(|c| c.view.pos);
-        let in_range = match (me_pos, target_pos) {
-            (Some(a), Some(b)) => a.dist(b) <= ATTACK_RANGE * 1.4,
-            _ => false,
-        };
-        if !in_range { return; }
+        // Let the server enforce range/cooldown — ranged classes need it that way.
         match kind {
             EntityKind::Mob | EntityKind::Player => self.send(&ClientMsg::Attack { target: id }),
             EntityKind::Echo => self.send(&ClientMsg::Exorcise { target: id }),
+            EntityKind::Projectile => {}
         }
     }
 
@@ -549,24 +573,33 @@ impl App {
         for c in &ents {
             let (sx, sy) = world_to_screen(c.view.pos, w, h, self.state.cam, dpr);
             let color = hue_to_rgb(c.view.hue, c.view.kind, c.view.flash);
-            let kind_id = match (c.view.kind, c.view.class) {
-                (EntityKind::Player, Some(Class::Warrior))  => 10.0,
-                (EntityKind::Player, Some(Class::Archer))   => 11.0,
-                (EntityKind::Player, Some(Class::Magician)) => 12.0,
-                (EntityKind::Player, None) => 0.0,
-                (EntityKind::Mob, _) => 1.0,
-                (EntityKind::Echo, _) => 2.0,
+            let kind_id = match (c.view.kind, c.view.class, c.view.proj_kind) {
+                (EntityKind::Player, Some(Class::Warrior), _)  => 10.0,
+                (EntityKind::Player, Some(Class::Archer), _)   => 11.0,
+                (EntityKind::Player, Some(Class::Magician), _) => 12.0,
+                (EntityKind::Player, None, _) => 0.0,
+                (EntityKind::Mob, _, _) => 1.0,
+                (EntityKind::Echo, Some(Class::Warrior), _)  => 22.0,
+                (EntityKind::Echo, Some(Class::Archer), _)   => 23.0,
+                (EntityKind::Echo, Some(Class::Magician), _) => 24.0,
+                (EntityKind::Echo, None, _) => 2.0,
+                (EntityKind::Projectile, _, Some(ProjectileKind::Arrow)) => 30.0,
+                (EntityKind::Projectile, _, Some(ProjectileKind::Bolt))  => 31.0,
+                (EntityKind::Projectile, _, None) => 30.0,
             };
             let extra = match c.view.kind {
                 EntityKind::Echo => [(c.view.hue as f32) * 0.1, 0.0],
-                EntityKind::Player => [c.view.facing, 0.0],
+                EntityKind::Player | EntityKind::Projectile => [c.view.facing, 0.0],
                 _ => [0.0, 0.0],
             };
-            let size = ENTITY_PIXEL_SIZE * dpr;
+            let size = match c.view.kind {
+                EntityKind::Projectile => ENTITY_PIXEL_SIZE * dpr * 0.55,
+                _ => ENTITY_PIXEL_SIZE * dpr,
+            };
             push_quad(&mut self.verts, sx, sy, color, size, kind_id, extra);
 
-            // HP bar above (not for echoes)
-            if c.view.kind != EntityKind::Echo && c.view.hp > 0 {
+            // HP bar above (only for players + mobs)
+            if matches!(c.view.kind, EntityKind::Player | EntityKind::Mob) && c.view.hp > 0 {
                 let ratio = (c.view.hp as f32 / c.view.hp_max.max(1) as f32).clamp(0.0, 1.0);
                 let bar_color = match c.view.kind {
                     EntityKind::Player => [0.5, 1.0, 0.6, 1.0],
@@ -661,6 +694,7 @@ fn hue_to_rgb(hue: u16, kind: EntityKind, flash: u8) -> [f32; 4] {
         EntityKind::Player => 0.7,
         EntityKind::Mob => 0.7,
         EntityKind::Echo => 0.55,
+        EntityKind::Projectile => 0.8,
     }, match kind {
         EntityKind::Mob => 0.85,
         _ => 1.0,
@@ -911,7 +945,7 @@ void main() {
         vec3 c = mix(v_color.rgb, v_color.rgb * 0.4, edge);
         outColor = vec4(c, 1.0);
     } else if (kind == 2) {
-        // Echo: pulsing translucent ghost
+        // Echo (unclassed fallback): pulsing translucent ghost
         if (d > 0.5) discard;
         float pulse = 0.6 + 0.4 * sin(u_time * 1.6 + v_extra.x);
         float wisp = sin(v_uv.x * 18.0 + u_time * 2.7) * sin(v_uv.y * 18.0 - u_time * 2.0);
@@ -919,6 +953,59 @@ void main() {
         float a = core * pulse * (0.45 + 0.45 * (0.5 + 0.5 * wisp));
         vec3 c = v_color.rgb + vec3(0.18, 0.20, 0.30);
         outColor = vec4(c, a);
+    } else if (kind == 22) {
+        // Warrior echo: warrior hex silhouette, translucent, pulse
+        vec2 q = abs(v_uv);
+        float hex = max(q.x * 1.1547, q.x * 0.5774 + q.y);
+        if (hex > 0.44) discard;
+        float pulse = 0.55 + 0.45 * sin(u_time * 1.4 + v_extra.x);
+        float core = 1.0 - smoothstep(0.20, 0.44, hex);
+        vec3 c = v_color.rgb + vec3(0.16, 0.12, 0.22);
+        outColor = vec4(c, core * pulse * 0.65);
+    } else if (kind == 23) {
+        // Archer echo
+        float dd = abs(v_uv.x) * 1.55 + abs(v_uv.y);
+        if (dd > 0.56) discard;
+        float pulse = 0.55 + 0.45 * sin(u_time * 1.4 + v_extra.x);
+        float core = 1.0 - smoothstep(0.20, 0.56, dd);
+        vec3 c = v_color.rgb + vec3(0.10, 0.18, 0.18);
+        outColor = vec4(c, core * pulse * 0.65);
+    } else if (kind == 24) {
+        // Magician echo: ghostly circle + slow orbit motes
+        float d2 = length(v_uv);
+        float body = step(d2, 0.30);
+        float mote = 0.0;
+        for (int i = 0; i < 3; i++) {
+            float a = u_time * 1.2 + float(i) * 2.0944;
+            vec2 p = vec2(cos(a), sin(a)) * 0.44;
+            mote = max(mote, 1.0 - smoothstep(0.0, 0.06, distance(v_uv, p)));
+        }
+        float alpha = body + mote;
+        if (alpha < 0.02) discard;
+        float pulse = 0.60 + 0.40 * sin(u_time * 1.4 + v_extra.x);
+        vec3 c = v_color.rgb + vec3(0.14, 0.08, 0.24);
+        c = mix(c, vec3(0.95, 0.85, 1.0), mote * 0.85);
+        outColor = vec4(c, alpha * pulse * 0.7);
+    } else if (kind == 30) {
+        // Arrow: thin oval along facing, warm color
+        float angle = v_extra.x;
+        vec2 rp = rot2(v_uv, -angle);
+        float oval = (rp.x * rp.x) / 0.22 + (rp.y * rp.y) / 0.020;
+        if (oval > 1.0) discard;
+        float tip = smoothstep(0.25, 0.45, rp.x);
+        vec3 shaft = vec3(0.82, 0.68, 0.38);
+        vec3 tipc  = vec3(1.0, 0.92, 0.70);
+        outColor = vec4(mix(shaft, tipc, tip), 1.0);
+    } else if (kind == 31) {
+        // Bolt: glowing orb with aura
+        float d2 = length(v_uv);
+        float core = smoothstep(0.25, 0.0, d2);
+        float glow = smoothstep(0.48, 0.0, d2) * 0.6;
+        float alpha = core + glow;
+        if (alpha < 0.02) discard;
+        float pulse = 0.85 + 0.15 * sin(u_time * 8.0);
+        vec3 c = mix(vec3(0.55, 0.35, 1.0), vec3(1.0, 0.9, 1.0), core);
+        outColor = vec4(c * pulse, alpha);
     } else if (kind == 3) {
         // Tile faint quad
         if (d > 0.5) discard;

@@ -84,6 +84,25 @@
     80%  { opacity: 1; }
     100% { opacity: 0; }
   }
+  .dmg-label {
+    position: fixed;
+    color: #ffd08a;
+    font-weight: 700;
+    font-size: 18px;
+    font-family: inherit;
+    pointer-events: none;
+    z-index: 15;
+    text-shadow: 0 0 6px rgba(0,0,0,0.9), 0 2px 3px rgba(0,0,0,0.7);
+    transform: translate(-50%, 0);
+    animation: dmgFloat 900ms ease-out forwards;
+    will-change: transform, opacity;
+  }
+  @keyframes dmgFloat {
+    0%   { opacity: 0; transform: translate(-50%, 6px) scale(0.7); }
+    15%  { opacity: 1; transform: translate(-50%, 0) scale(1.1); }
+    30%  { transform: translate(-50%, -4px) scale(1.0); }
+    100% { opacity: 0; transform: translate(-50%, -48px) scale(0.9); }
+  }
 </style>
 </head>
 <body>
